@@ -27,6 +27,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import sys
 
@@ -128,24 +129,91 @@ def _build_llm(tensor_parallel_size: int):
 
 
 # ==========================================================================
+# Data-parallel sharding
+# ==========================================================================
+def _stable_hash(s: str) -> int:
+    """Deterministic integer hash, stable across processes and Python runs."""
+    return int(hashlib.md5(s.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def _shard_rows(
+    df: pd.DataFrame, worker_id: int, num_workers: int, key_col: str = "drug_name"
+) -> pd.DataFrame:
+    """Keep only the rows whose stable_hash(key) % num_workers == worker_id."""
+    if num_workers <= 1:
+        return df
+    mask = (
+        df[key_col]
+        .astype(str)
+        .map(lambda n: _stable_hash(n) % num_workers == worker_id)
+    )
+    return df[mask].reset_index(drop=True)
+
+
+def _apply_worker_suffix(worker_id: int, num_workers: int) -> None:
+    """
+    Rewrite the output paths on the config module so each data-parallel worker
+    writes to its own `*.w{id}.json` file. A no-op when running single-worker.
+    """
+    if num_workers <= 1:
+        return
+    suffix = f".w{worker_id}.json"
+    config.REFINED_DESC_JSON = config.REFINED_DESC_JSON.with_suffix(suffix)
+    config.PREDICTED_TARGETS_JSON = config.PREDICTED_TARGETS_JSON.with_suffix(suffix)
+    config.FAILED_ABSTRACTS_JSON = config.FAILED_ABSTRACTS_JSON.with_suffix(suffix)
+
+
+def _throttle_entrez(num_workers: int) -> None:
+    """
+    NCBI rate-limits per IP (3 req/s w/o API key, 10 w/ key). With N parallel
+    workers, per-worker thread count must be divided by N so total concurrent
+    requests stay bounded.
+    """
+    if num_workers <= 1:
+        return
+    shared = max(1, config.ENTREZ_MAX_WORKERS // num_workers)
+    config.ENTREZ_MAX_WORKERS = shared
+
+
+# ==========================================================================
 # Orchestration
 # ==========================================================================
-def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
+def run_all(
+    tensor_parallel_size: int,
+    stage: str = "all",
+    worker_id: int = 0,
+    num_workers: int = 1,
+) -> None:
     log = logging.getLogger(__name__)
+
+    # Per-worker output paths + throttled NCBI concurrency (both no-ops if N=1)
+    _apply_worker_suffix(worker_id, num_workers)
+    _throttle_entrez(num_workers)
+
     drugs_df, proteins_df, gt_df = _load_inputs()
 
     gt_names = set(gt_df["Drug Name"].astype(str))
     gt_rows = drugs_df[drugs_df["drug_name"].isin(gt_names)].copy()
     rest_rows = drugs_df[~drugs_df["drug_name"].isin(gt_names)].copy()
 
+    # GT drugs are cheap (10 of them) — every worker processes them into its
+    # own per-worker file, merge at the end picks one copy. This keeps the
+    # few-shot pool locally available to each worker without cross-worker IPC.
+    #
+    # Non-GT drugs are sharded so each drug is processed exactly once.
+    rest_rows = _shard_rows(rest_rows, worker_id, num_workers)
+
     log.info(
-        "Loaded: %d drugs | %d proteins | %d ground-truth pairs",
+        "Worker %d/%d - loaded: %d drugs | %d proteins | %d GT pairs",
+        worker_id,
+        num_workers,
         len(drugs_df),
         len(proteins_df),
         len(gt_df),
     )
-    log.info("   -> %d GT drugs will go through description only", len(gt_rows))
-    log.info("   -> %d remaining drugs will go through both stages", len(rest_rows))
+    log.info("   -> %d GT drugs (all workers)", len(gt_rows))
+    log.info("   -> %d non-GT drugs on this worker", len(rest_rows))
+    log.info("   -> outputs: %s", config.REFINED_DESC_JSON.name)
 
     llm = _build_llm(tensor_parallel_size)
 
@@ -239,10 +307,35 @@ def main() -> None:
         default=config.TENSOR_PARALLEL_SIZE,
         help="vLLM tensor_parallel_size.",
     )
+    parser.add_argument(
+        "--worker-id",
+        type=int,
+        default=0,
+        help="Data-parallel worker index (0-based). Ignored when --num-workers=1.",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help="Number of data-parallel workers running concurrently. "
+        "Each worker processes a stable hash-sharded subset of the drugs and "
+        "writes its outputs to `<name>.w{id}.json`. "
+        "Use `merge_outputs.py` at the end to combine them.",
+    )
     args = parser.parse_args()
 
+    if not (0 <= args.worker_id < args.num_workers):
+        parser.error(
+            f"--worker-id {args.worker_id} out of range [0, {args.num_workers})"
+        )
+
     _setup_logging()
-    run_all(tensor_parallel_size=args.tensor_parallel_size, stage=args.stage)
+    run_all(
+        tensor_parallel_size=args.tensor_parallel_size,
+        stage=args.stage,
+        worker_id=args.worker_id,
+        num_workers=args.num_workers,
+    )
 
 
 if __name__ == "__main__":

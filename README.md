@@ -127,32 +127,64 @@ Total ≈ 3 200 tokens / drug → **~45 min for 5 000 drugs** assuming average
 throughput. PubMed I/O overlaps with generation, so you rarely see it on
 the critical path.
 
-### If you need even more throughput
-
-Switch from 1 model × 4 GPUs to 4 models × 1 GPU (data parallelism). With a
-4-bit Mixtral fitting in ~25 GB, each A100 40 GB can host one instance.
-That removes the TP all-reduce and usually gives ~1.3–1.6× higher
-aggregate throughput for this kind of independent-request workload.
-Simplest way: launch 4 `main.py` processes, each pinned to one GPU
-(`CUDA_VISIBLE_DEVICES=0`, `=1`, …), and shard the drug list across them.
-The checkpoint CSVs are already de-duplicated on `drug_name`, so the
-processes can safely write to the same file.
+On 5 × A100 in **data-parallel** mode, expect roughly **5 × single-GPU
+throughput minus merge cost (~a few seconds)** — in practice about
+1.3–1.6× what 4-way tensor parallelism gives, and using every GPU
+including the 5th.
 
 ## Running
 
 ```bash
 # Fill in your email in config.PUBMED_EMAIL first!
 pip install -r requirements.txt
-
-# Full run (default — all 3 steps)
-./launch.sh
-
-# Just the descriptions
-./launch.sh --stage descriptions
-
-# Just the target predictions (needs refined_descriptions.csv already)
-./launch.sh --stage targets
 ```
+
+### On 4 × A100 (tensor-parallel)
+
+```bash
+./launch.sh                       # default: TP=4, full run
+./launch.sh --stage descriptions  # only stage 1/2a/3
+./launch.sh --stage targets       # only stage 2b (needs refined_descriptions.json)
+```
+
+### On 5 × A100 (data-parallel)
+
+`tensor_parallel_size=5` is **not legal** for Mixtral-8x7B (its 8 KV heads
+don't divide by 5), so on 5 GPUs the right pattern is data parallelism —
+5 independent vLLM instances, one per GPU, each running `TP=1`. Drugs are
+stable-hash-sharded across workers and the per-worker JSONs are merged at
+the end. Each worker processes the ground-truth drugs into its own shard
+so the few-shot pool is locally available without cross-worker IPC;
+duplicates are deduped during merge.
+
+```bash
+./launch_data_parallel.sh                      # 5 workers, 1 GPU each
+NUM_WORKERS=4 ./launch_data_parallel.sh        # override count
+./launch_data_parallel.sh --stage descriptions # forwarded flags work too
+```
+
+Per-worker logs land in `output/logs/worker_<N>.log`. When every worker
+exits cleanly, the launcher runs `merge_outputs.py --cleanup` which
+combines `refined_descriptions.w*.json` → `refined_descriptions.json`
+(and likewise for the targets and failed-abstracts files), deleting the
+shards.
+
+If any worker fails, the launcher exits non-zero and skips the merge so
+you can inspect the per-worker shards directly. Fix the problem, re-run,
+then either rerun the full launcher (it resumes — every worker skips
+drugs already in its own shard) or merge manually:
+
+```bash
+python merge_outputs.py --num-workers 5 --cleanup
+```
+
+Why data-parallel wins on 5 GPUs:
+
+- No TP all-reduce between forward passes -> ~1.3-1.6× throughput vs TP.
+- Mixtral-GPTQ-4bit fits in ~25 GB, so each A100 40 GB comfortably hosts
+  its own instance plus a generous KV-cache.
+- The NCBI rate limit is automatically divided by the number of workers
+  (`_throttle_entrez` in `main.py`) so we stay polite to PubMed.
 
 ## Tuning knobs in `config.py`
 
