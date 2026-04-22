@@ -119,10 +119,9 @@ def _build_llm(tensor_parallel_size: int):
         quantization=config.QUANTIZATION,
         dtype=config.DTYPE,
         # tensor_parallel_size=tensor_parallel_size,
-        max_model_len=config.MAX_MODEL_LEN,
+        #        max_model_len=config.MAX_MODEL_LEN,
         gpu_memory_utilization=config.GPU_MEMORY_UTILIZATION,
         enforce_eager=config.ENFORCE_EAGER,
-        seed=config.SEED,
     )
 
 
