@@ -82,12 +82,25 @@ cellhit_targets/
 
 ## Outputs written to `output/`
 
+All pipeline outputs are written as **JSON arrays of records** (atomic
+writes, last-write-wins on `drug_name`). Nested fields are native JSON —
+no `json.loads()` gymnastics needed when consuming them.
+
 | File | Contents |
 |------|----------|
-| `refined_descriptions.csv` | drug_name, cid, initial_description, refined_description, n_abstracts, abstracts(JSON) |
-| `predicted_targets.csv` | drug_name, targets(JSON of ranked records), top_genes, top_pids, n_runs, raw_votes(JSON) |
-| `failed_abstracts.csv` | drugs for which PubMed returned nothing even after CID fallback |
-| `logs/pipeline.log` | full run log |
+| `refined_descriptions.json` | `drug_name, cid, initial_description, refined_description, n_abstracts, abstracts (list[str])` |
+| `predicted_targets.json`    | `drug_name, targets (list[{gene_symbol, protein_id, votes, rationales}]), top_genes (list[str]), top_pids (list[str]), n_runs, raw_votes (dict[str,int])` |
+| `failed_abstracts.json`     | drugs for which PubMed returned nothing even after CID fallback (`drug_name, reason`) |
+| `logs/pipeline.log`         | full run log |
+
+Quick inspection:
+
+```bash
+jq '.[0]'                    output/refined_descriptions.json   # first drug
+jq '.[] | .drug_name'        output/predicted_targets.json      # all drug names
+jq '.[0].targets[0]'         output/predicted_targets.json      # top target record
+jq '.[] | select(.raw_votes.EGFR >= 3)' output/predicted_targets.json
+```
 
 ## Why this runs fast on 4 × A100 40 GB
 

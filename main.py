@@ -162,7 +162,7 @@ def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
         log.info("=" * 70)
         log.info("STEP 2b: target prediction for remaining drugs")
         log.info("=" * 70)
-        refined_desc_df = load_df(config.REFINED_DESC_CSV)
+        refined_desc_df = load_df(config.REFINED_DESC_JSON)
         if refined_desc_df.empty:
             log.warning("No refined descriptions on disk - run --stage descriptions first")
         else:
@@ -180,7 +180,7 @@ def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
         # persist the failed list so it survives restarts
         append_checkpoint(
             [{"drug_name": n, "reason": "pubmed_name_miss"} for n in failed],
-            config.FAILED_ABSTRACTS_CSV,
+            config.FAILED_ABSTRACTS_JSON,
             key_col="drug_name",
         )
 
@@ -189,7 +189,7 @@ def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
 
         # drugs recovered by CID fallback also need target prediction
         if stage in ("all", "targets") and len(still_failed) < len(failed):
-            refined_desc_df = load_df(config.REFINED_DESC_CSV)
+            refined_desc_df = load_df(config.REFINED_DESC_JSON)
             run_target_pipeline(llm, refined_desc_df, gt_df, proteins_df)
 
         if still_failed:
@@ -197,7 +197,7 @@ def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
                         len(still_failed), still_failed[:10])
             append_checkpoint(
                 [{"drug_name": n, "reason": "pubmed_cid_miss"} for n in still_failed],
-                config.FAILED_ABSTRACTS_CSV,
+                config.FAILED_ABSTRACTS_JSON,
                 key_col="drug_name",
             )
 

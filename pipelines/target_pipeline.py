@@ -203,7 +203,7 @@ def run_target_pipeline(
 
     # Resume support
     done_targets = (
-        load_processed(config.PREDICTED_TARGETS_CSV) if config.RESUME else set()
+        load_processed(config.PREDICTED_TARGETS_JSON) if config.RESUME else set()
     )
     gt_names = set(ground_truth_df["Drug Name"].astype(str))
     todo = refined_desc_df[
@@ -256,12 +256,12 @@ def run_target_pipeline(
 
             records.append({
                 "drug_name"  : name,
-                "targets"    : json.dumps(ranked),             # full ranked list w/ rationales
-                "top_genes"  : ",".join(r["gene_symbol"] for r in ranked),
-                "top_pids"   : ",".join(r["protein_id"] or "" for r in ranked),
+                "targets"    : ranked,                                           # list[{"gene_symbol","protein_id","votes","rationales"}]
+                "top_genes"  : [r["gene_symbol"] for r in ranked],               # list[str]
+                "top_pids"   : [r["protein_id"] for r in ranked if r["protein_id"]],
                 "n_runs"     : k_samples,
-                "raw_votes"  : json.dumps({g: v["count"] for g, v in votes.items()}),
+                "raw_votes"  : {g: v["count"] for g, v in votes.items()},        # dict[str, int]
             })
 
-        append_checkpoint(records, config.PREDICTED_TARGETS_CSV, key_col="drug_name")
+        append_checkpoint(records, config.PREDICTED_TARGETS_JSON, key_col="drug_name")
         log.info("     wrote %d target predictions", len(records))

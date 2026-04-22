@@ -20,7 +20,6 @@ the 4×A100 tensor-parallel group.
 """
 from __future__ import annotations
 
-import json
 import logging
 from typing import Iterable
 
@@ -112,7 +111,7 @@ def _run_llm_two_stage(
             "initial_description" : init.strip(),
             "refined_description" : ref.strip(),
             "n_abstracts"         : len(r["abstracts"]),
-            "abstracts"           : json.dumps(r["abstracts"]),
+            "abstracts"           : r["abstracts"],        # native list[str]
         }
         for r, init, ref in zip(rows, initial_descs, refined)
     ]
@@ -150,7 +149,7 @@ def run_description_pipeline(
 
     # Resume: skip drugs we already have descriptions for
     done_desc = (
-        load_processed(config.REFINED_DESC_CSV)       if config.RESUME else set()
+        load_processed(config.REFINED_DESC_JSON)       if config.RESUME else set()
     )
     todo = drugs_df[~drugs_df["drug_name"].isin(done_desc)].reset_index(drop=True)
     if todo.empty:
@@ -197,8 +196,8 @@ def run_description_pipeline(
         out_records = _run_llm_two_stage(llm, rows)
 
         # 4. Checkpoint
-        append_checkpoint(out_records, config.REFINED_DESC_CSV, key_col="drug_name")
+        append_checkpoint(out_records, config.REFINED_DESC_JSON, key_col="drug_name")
         log.info("     wrote %d refined descriptions to %s",
-                 len(out_records), config.REFINED_DESC_CSV.name)
+                 len(out_records), config.REFINED_DESC_JSON.name)
 
     return all_failed
