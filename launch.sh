@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # Pin the 4 GPUs we want vLLM to use
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:0,1,2,3}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4}
 
 # vLLM + HF caching
 export HF_HOME=${HF_HOME:-$HOME/.cache/huggingface}
@@ -25,4 +25,4 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 cd "$(dirname "$0")"
 
-python main.py --tensor-parallel-size 4 "$@"
+python main.py --tensor-parallel-size 5 "$@"

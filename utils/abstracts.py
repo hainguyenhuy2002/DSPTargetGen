@@ -13,10 +13,11 @@ Network I/O is the bottleneck here, not compute, so we fan out with a
 ThreadPoolExecutor. NCBI rate-limits at 3 req/s without an API key and
 10 req/s with one — keep ENTREZ_MAX_WORKERS consistent with that.
 """
+
 from __future__ import annotations
 
-import time
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterable, List, Optional, Tuple
 
@@ -34,7 +35,9 @@ def _entrez_config(email: str, api_key: Optional[str] = None) -> None:
         Entrez.api_key = api_key
 
 
-def _fetch_by_term(term: str, k: int, retries: int = 3, backoff: float = 0.5) -> List[str]:
+def _fetch_by_term(
+    term: str, k: int, retries: int = 3, backoff: float = 0.5
+) -> List[str]:
     """Query PubMed for `term`, return up to `k` abstract strings. [] on failure."""
     last_err: Optional[Exception] = None
     for attempt in range(retries):
@@ -54,14 +57,16 @@ def _fetch_by_term(term: str, k: int, retries: int = 3, backoff: float = 0.5) ->
             abstracts: List[str] = []
             for paper in papers:
                 try:
-                    chunks = paper["MedlineCitation"]["Article"]["Abstract"]["AbstractText"]
+                    chunks = paper["MedlineCitation"]["Article"]["Abstract"][
+                        "AbstractText"
+                    ]
                     abstracts.append(" ".join(str(c) for c in chunks))
                 except (KeyError, IndexError):
                     continue
             return abstracts
         except Exception as e:  # network / XML errors are expected
             last_err = e
-            time.sleep(backoff * (2 ** attempt))
+            time.sleep(backoff * (2**attempt))
     log.debug("PubMed failed for term=%r after %d retries: %s", term, retries, last_err)
     return []
 
@@ -117,7 +122,12 @@ def fetch_with_cid_fallback(
     for alt in _cid_to_synonyms(cid):
         abstracts = _fetch_by_term(alt, k=k)
         if abstracts:
-            log.info("CID-fallback recovered %d abstracts for %r via %r", len(abstracts), drug_name, alt)
+            log.info(
+                "CID-fallback recovered %d abstracts for %r via %r",
+                len(abstracts),
+                drug_name,
+                alt,
+            )
             return abstracts
         # small courtesy sleep between PubChem + PubMed hops
         time.sleep(0.2)
@@ -173,7 +183,7 @@ def batch_fetch_by_cid(
     k: int,
     email: str,
     api_key: Optional[str] = None,
-    max_workers: int = 4,          # PubChem is slower; fewer workers to stay polite
+    max_workers: int = 5,  # PubChem is slower; fewer workers to stay polite
 ) -> Tuple[dict, List[str]]:
     """
     Same shape as `batch_fetch_by_name` but uses the CID fallback strategy.
