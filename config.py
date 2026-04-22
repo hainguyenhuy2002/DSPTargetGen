@@ -47,7 +47,7 @@ TENSOR_PARALLEL_SIZE = 4  # 4 x A100 40GB
 MAX_MODEL_LEN = 32_768
 GPU_MEMORY_UTILIZATION = 0.9
 TRUST_REMOTE_CODE = True
-ENFORCE_EAGER = False  # keep CUDA graphs for throughput
+ENFORCE_EAGER = True  # keep CUDA graphs for throughput
 SEED = 17
 
 # ==========================================================================

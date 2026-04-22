@@ -121,7 +121,6 @@ def _build_llm(tensor_parallel_size: int):
         # tensor_parallel_size=tensor_parallel_size,
         max_model_len=config.MAX_MODEL_LEN,
         gpu_memory_utilization=config.GPU_MEMORY_UTILIZATION,
-        trust_remote_code=config.TRUST_REMOTE_CODE,
         enforce_eager=config.ENFORCE_EAGER,
         seed=config.SEED,
     )
