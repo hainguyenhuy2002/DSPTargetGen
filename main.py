@@ -23,19 +23,20 @@ Usage
     python main.py --stage targets            # only target prediction
     python main.py --tensor-parallel-size 4   # override TP (default from config)
 """
+
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
-from pathlib import Path
 
 import pandas as pd
 
 # vLLM is heavy — import lazily inside main() so `--help` etc stay snappy.
 import config
 from pipelines import run_description_pipeline, run_target_pipeline
-from utils import load_df, append_checkpoint
+from utils.checkpoint import append_checkpoint, load_df
+
 
 # ==========================================================================
 # Logging setup
@@ -43,9 +44,9 @@ from utils import load_df, append_checkpoint
 def _setup_logging() -> None:
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        level   = logging.INFO,
-        format  = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
-        datefmt = "%H:%M:%S",
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
         handlers=[
             logging.FileHandler(config.LOG_DIR / "pipeline.log"),
             logging.StreamHandler(sys.stdout),
@@ -81,9 +82,9 @@ def _standardise_drugs_info(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    drugs_df     = pd.read_csv(config.DRUGS_INFO_CSV)
-    proteins_df  = pd.read_csv(config.PROTEINS_INFO_CSV)
-    gt_df        = pd.read_csv(config.GROUND_TRUTH_CSV)
+    drugs_df = pd.read_csv(config.DRUGS_INFO_CSV)
+    proteins_df = pd.read_csv(config.PROTEINS_INFO_CSV)
+    gt_df = pd.read_csv(config.GROUND_TRUTH_CSV)
 
     drugs_df = _standardise_drugs_info(drugs_df)
 
@@ -93,7 +94,9 @@ def _load_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             raise ValueError(f"proteins_info.csv must contain column {need!r}")
     for need in ("Drug Name", "Proteins"):
         if need not in gt_df.columns:
-            raise ValueError(f"elite_drug_target_groundtruth.csv must contain column {need!r}")
+            raise ValueError(
+                f"elite_drug_target_groundtruth.csv must contain column {need!r}"
+            )
 
     return drugs_df, proteins_df, gt_df
 
@@ -104,19 +107,22 @@ def _load_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 def _build_llm(tensor_parallel_size: int):
     """Load the quantised Mixtral once, sharded across all 4 GPUs."""
     from vllm import LLM
+
     log = logging.getLogger(__name__)
-    log.info("Loading vLLM model from %s (TP=%d)", config.MODEL_PATH, tensor_parallel_size)
+    log.info(
+        "Loading vLLM model from %s (TP=%d)", config.MODEL_PATH, tensor_parallel_size
+    )
     return LLM(
-        model                  = config.MODEL_PATH,
-        revision               = config.MODEL_REVISION,
-        quantization           = config.QUANTIZATION,
-        dtype                  = config.DTYPE,
-        tensor_parallel_size   = tensor_parallel_size,
-        max_model_len          = config.MAX_MODEL_LEN,
-        gpu_memory_utilization = config.GPU_MEMORY_UTILIZATION,
-        trust_remote_code      = config.TRUST_REMOTE_CODE,
-        enforce_eager          = config.ENFORCE_EAGER,
-        seed                   = config.SEED,
+        model=config.MODEL_PATH,
+        revision=config.MODEL_REVISION,
+        quantization=config.QUANTIZATION,
+        dtype=config.DTYPE,
+        tensor_parallel_size=tensor_parallel_size,
+        max_model_len=config.MAX_MODEL_LEN,
+        gpu_memory_utilization=config.GPU_MEMORY_UTILIZATION,
+        trust_remote_code=config.TRUST_REMOTE_CODE,
+        enforce_eager=config.ENFORCE_EAGER,
+        seed=config.SEED,
     )
 
 
@@ -127,13 +133,17 @@ def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
     log = logging.getLogger(__name__)
     drugs_df, proteins_df, gt_df = _load_inputs()
 
-    gt_names  = set(gt_df["Drug Name"].astype(str))
-    gt_rows   = drugs_df[drugs_df["drug_name"].isin(gt_names)].copy()
+    gt_names = set(gt_df["Drug Name"].astype(str))
+    gt_rows = drugs_df[drugs_df["drug_name"].isin(gt_names)].copy()
     rest_rows = drugs_df[~drugs_df["drug_name"].isin(gt_names)].copy()
 
-    log.info("Loaded: %d drugs | %d proteins | %d ground-truth pairs",
-             len(drugs_df), len(proteins_df), len(gt_df))
-    log.info("   -> %d GT drugs will go through description only",  len(gt_rows))
+    log.info(
+        "Loaded: %d drugs | %d proteins | %d ground-truth pairs",
+        len(drugs_df),
+        len(proteins_df),
+        len(gt_df),
+    )
+    log.info("   -> %d GT drugs will go through description only", len(gt_rows))
     log.info("   -> %d remaining drugs will go through both stages", len(rest_rows))
 
     llm = _build_llm(tensor_parallel_size)
@@ -164,7 +174,9 @@ def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
         log.info("=" * 70)
         refined_desc_df = load_df(config.REFINED_DESC_JSON)
         if refined_desc_df.empty:
-            log.warning("No refined descriptions on disk - run --stage descriptions first")
+            log.warning(
+                "No refined descriptions on disk - run --stage descriptions first"
+            )
         else:
             run_target_pipeline(llm, refined_desc_df, gt_df, proteins_df)
 
@@ -193,8 +205,11 @@ def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
             run_target_pipeline(llm, refined_desc_df, gt_df, proteins_df)
 
         if still_failed:
-            log.warning("%d drugs could not be recovered even via CID: %s",
-                        len(still_failed), still_failed[:10])
+            log.warning(
+                "%d drugs could not be recovered even via CID: %s",
+                len(still_failed),
+                still_failed[:10],
+            )
             append_checkpoint(
                 [{"drug_name": n, "reason": "pubmed_cid_miss"} for n in still_failed],
                 config.FAILED_ABSTRACTS_JSON,
@@ -208,14 +223,21 @@ def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
 # CLI
 # ==========================================================================
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--stage", choices=["all", "descriptions", "targets"],
-                        default="all",
-                        help="Which stage(s) to run.")
-    parser.add_argument("--tensor-parallel-size", type=int,
-                        default=config.TENSOR_PARALLEL_SIZE,
-                        help="vLLM tensor_parallel_size.")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--stage",
+        choices=["all", "descriptions", "targets"],
+        default="all",
+        help="Which stage(s) to run.",
+    )
+    parser.add_argument(
+        "--tensor-parallel-size",
+        type=int,
+        default=config.TENSOR_PARALLEL_SIZE,
+        help="vLLM tensor_parallel_size.",
+    )
     args = parser.parse_args()
 
     _setup_logging()

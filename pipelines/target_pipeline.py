@@ -14,6 +14,7 @@ ground-truth set:
   4. Vote across the K samples, filter out targets not in the active
      protein set, map gene symbols back to ProteinIDs, and checkpoint.
 """
+
 from __future__ import annotations
 
 import ast
@@ -26,17 +27,10 @@ import pandas as pd
 from vllm import SamplingParams
 
 import config
-from utils import (
-    render_prompt,
-    parse_json,
-    extract_targets,
-    vote_targets,
-    filter_by_votes,
-    map_genes_to_protein_ids,
-    append_checkpoint,
-    load_processed,
-    load_df,
-)
+from utils.aggregator import filter_by_votes, map_genes_to_protein_ids, vote_targets
+from utils.checkpoint import append_checkpoint, load_processed
+from utils.parser import extract_targets, parse_json
+from utils.prompts import render_prompt
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +38,9 @@ log = logging.getLogger(__name__)
 # ==========================================================================
 # Protein list & gene-symbol mappings
 # ==========================================================================
-def build_protein_context(proteins_df: pd.DataFrame) -> tuple[str, dict[str, str], set[str]]:
+def build_protein_context(
+    proteins_df: pd.DataFrame,
+) -> tuple[str, dict[str, str], set[str]]:
     """
     Compose the 'Available proteins' block injected into every target prompt,
     plus the lookup structures used to validate LLM output.
@@ -75,7 +71,7 @@ def build_protein_context(proteins_df: pd.DataFrame) -> tuple[str, dict[str, str
         for _, r in df.drop_duplicates(subset=["Coded Gene"]).iterrows()
     ]
     proteins_block = "\n".join(lines)
-    allowed_genes  = set(gene_to_pid.keys())
+    allowed_genes = set(gene_to_pid.keys())
 
     log.info("Active-protein pool: %d unique gene symbols", len(allowed_genes))
     return proteins_block, gene_to_pid, allowed_genes
@@ -84,7 +80,9 @@ def build_protein_context(proteins_df: pd.DataFrame) -> tuple[str, dict[str, str
 # ==========================================================================
 # Few-shot pool construction
 # ==========================================================================
-def _protein_ids_to_genes(protein_ids: Iterable[str], pid_to_gene: dict[str, str]) -> list[str]:
+def _protein_ids_to_genes(
+    protein_ids: Iterable[str], pid_to_gene: dict[str, str]
+) -> list[str]:
     out = []
     for pid in protein_ids:
         g = pid_to_gene.get(str(pid).strip())
@@ -109,9 +107,9 @@ def _parse_protein_list(raw) -> list[str]:
 
 
 def build_fewshot_pool(
-    ground_truth_df : pd.DataFrame,
-    refined_desc_df : pd.DataFrame,
-    proteins_df     : pd.DataFrame,
+    ground_truth_df: pd.DataFrame,
+    refined_desc_df: pd.DataFrame,
+    proteins_df: pd.DataFrame,
 ) -> list[dict]:
     """
     Build the pool of few-shot examples. Each entry contains the drug name,
@@ -122,24 +120,27 @@ def build_fewshot_pool(
         for _, r in proteins_df.dropna(subset=["Coded Gene"]).iterrows()
     }
 
-    desc_by_drug = {r["drug_name"]: r["refined_description"]
-                    for _, r in refined_desc_df.iterrows()}
+    desc_by_drug = {
+        r["drug_name"]: r["refined_description"] for _, r in refined_desc_df.iterrows()
+    }
 
     pool: list[dict] = []
     for _, r in ground_truth_df.iterrows():
         name = r["Drug Name"]
         if name not in desc_by_drug:
-            continue          # no refined description yet — skip
+            continue  # no refined description yet — skip
         gene_targets = _protein_ids_to_genes(
             _parse_protein_list(r["Proteins"]), pid_to_gene
         )
         if not gene_targets:
             continue
-        pool.append({
-            "drug_name"   : name,
-            "description" : desc_by_drug[name],
-            "targets"     : gene_targets,
-        })
+        pool.append(
+            {
+                "drug_name": name,
+                "description": desc_by_drug[name],
+                "targets": gene_targets,
+            }
+        )
     log.info("Few-shot pool: %d usable ground-truth drugs", len(pool))
     return pool
 
@@ -153,11 +154,9 @@ def format_fewshot(examples: list[dict], max_desc_chars: int = 1200) -> str:
             desc = desc[:max_desc_chars] + " …[truncated]"
         # We render the example output in the same JSON schema the model
         # must follow so it can imitate.
-        json_targets = {
-            f"target_{k+1}"   : g for k, g in enumerate(ex["targets"])
-        }
+        json_targets = {f"target_{k + 1}": g for k, g in enumerate(ex["targets"])}
         for k, g in enumerate(ex["targets"]):
-            json_targets[f"rationale_{k+1}"] = (
+            json_targets[f"rationale_{k + 1}"] = (
                 f"{g} is a known target based on curated drug-target annotations."
             )
         blocks.append(
@@ -174,21 +173,21 @@ def format_fewshot(examples: list[dict], max_desc_chars: int = 1200) -> str:
 # ==========================================================================
 def run_target_pipeline(
     llm,
-    refined_desc_df : pd.DataFrame,
-    ground_truth_df : pd.DataFrame,
-    proteins_df     : pd.DataFrame,
+    refined_desc_df: pd.DataFrame,
+    ground_truth_df: pd.DataFrame,
+    proteins_df: pd.DataFrame,
     *,
     batch_size: int | None = None,
-    k_samples : int | None = None,
-    n_fewshot : int | None = None,
+    k_samples: int | None = None,
+    n_fewshot: int | None = None,
 ) -> None:
     """
     Predict targets for every drug that has a refined description but is not
     in the ground-truth set.
     """
     batch_size = batch_size or config.BATCH_SIZE
-    k_samples  = k_samples  or config.SELF_CONSISTENCY_K
-    n_fewshot  = n_fewshot  or config.NUM_FEWSHOT_EXAMPLES
+    k_samples = k_samples or config.SELF_CONSISTENCY_K
+    n_fewshot = n_fewshot or config.NUM_FEWSHOT_EXAMPLES
 
     proteins_block, gene_to_pid, allowed_genes = build_protein_context(proteins_df)
     fewshot_pool = build_fewshot_pool(ground_truth_df, refined_desc_df, proteins_df)
@@ -198,7 +197,9 @@ def run_target_pipeline(
             "already run on the ground-truth drugs."
         )
     if n_fewshot > len(fewshot_pool):
-        log.warning("n_fewshot=%d > pool size %d; clamping.", n_fewshot, len(fewshot_pool))
+        log.warning(
+            "n_fewshot=%d > pool size %d; clamping.", n_fewshot, len(fewshot_pool)
+        )
         n_fewshot = len(fewshot_pool)
 
     # Resume support
@@ -214,33 +215,36 @@ def run_target_pipeline(
         log.info("No drugs left for target pipeline.")
         return
 
-    log.info("Target pipeline: %d drugs to predict, K=%d samples each",
-             len(todo), k_samples)
+    log.info(
+        "Target pipeline: %d drugs to predict, K=%d samples each", len(todo), k_samples
+    )
 
     sp = SamplingParams(
-        temperature = config.TARGET_TEMPERATURE,
-        top_p       = config.TARGET_TOP_P,
-        max_tokens  = config.TARGET_MAX_TOKENS,
-        n           = k_samples,   # <-- key optimisation: K samples / prompt
-        seed        = config.SEED,
+        temperature=config.TARGET_TEMPERATURE,
+        top_p=config.TARGET_TOP_P,
+        max_tokens=config.TARGET_MAX_TOKENS,
+        n=k_samples,  # <-- key optimisation: K samples / prompt
+        seed=config.SEED,
     )
 
     rng = random.Random(config.SEED)
 
     for start in range(0, len(todo), batch_size):
-        batch = todo.iloc[start:start + batch_size]
+        batch = todo.iloc[start : start + batch_size]
         log.info("  -> batch %d-%d / %d", start, start + len(batch), len(todo))
 
         prompts, names = [], []
         for _, r in batch.iterrows():
             fs = rng.sample(fewshot_pool, n_fewshot)
-            prompts.append(render_prompt(
-                config.TARGET_PROMPT,
-                drug_name            = r["drug_name"],
-                refined_description  = r["refined_description"],
-                fewshot_examples     = format_fewshot(fs),
-                proteins_block       = proteins_block,
-            ))
+            prompts.append(
+                render_prompt(
+                    config.TARGET_PROMPT,
+                    drug_name=r["drug_name"],
+                    refined_description=r["refined_description"],
+                    fewshot_examples=format_fewshot(fs),
+                    proteins_block=proteins_block,
+                )
+            )
             names.append(r["drug_name"])
 
         outputs = llm.generate(prompts, sp, use_tqdm=True)
@@ -248,20 +252,28 @@ def run_target_pipeline(
         records = []
         for name, req_out in zip(names, outputs):
             # req_out.outputs is a list of length K (one per sample)
-            runs = [extract_targets(parse_json(sample.text)) for sample in req_out.outputs]
+            runs = [
+                extract_targets(parse_json(sample.text)) for sample in req_out.outputs
+            ]
 
-            votes    = vote_targets(runs)
-            filtered = filter_by_votes(votes, min_votes=config.MIN_VOTES, allowed=allowed_genes)
-            ranked   = map_genes_to_protein_ids(filtered, gene_to_pid)
+            votes = vote_targets(runs)
+            filtered = filter_by_votes(
+                votes, min_votes=config.MIN_VOTES, allowed=allowed_genes
+            )
+            ranked = map_genes_to_protein_ids(filtered, gene_to_pid)
 
-            records.append({
-                "drug_name"  : name,
-                "targets"    : ranked,                                           # list[{"gene_symbol","protein_id","votes","rationales"}]
-                "top_genes"  : [r["gene_symbol"] for r in ranked],               # list[str]
-                "top_pids"   : [r["protein_id"] for r in ranked if r["protein_id"]],
-                "n_runs"     : k_samples,
-                "raw_votes"  : {g: v["count"] for g, v in votes.items()},        # dict[str, int]
-            })
+            records.append(
+                {
+                    "drug_name": name,
+                    "targets": ranked,  # list[{"gene_symbol","protein_id","votes","rationales"}]
+                    "top_genes": [r["gene_symbol"] for r in ranked],  # list[str]
+                    "top_pids": [r["protein_id"] for r in ranked if r["protein_id"]],
+                    "n_runs": k_samples,
+                    "raw_votes": {
+                        g: v["count"] for g, v in votes.items()
+                    },  # dict[str, int]
+                }
+            )
 
         append_checkpoint(records, config.PREDICTED_TARGETS_JSON, key_col="drug_name")
         log.info("     wrote %d target predictions", len(records))
