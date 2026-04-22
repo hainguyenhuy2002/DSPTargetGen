@@ -34,7 +34,8 @@ import pandas as pd
 
 # vLLM is heavy — import lazily inside main() so `--help` etc stay snappy.
 import config
-from pipelines import run_description_pipeline, run_target_pipeline
+from pipelines.description_pipeline import run_description_pipeline
+from pipelines.target_pipeline import run_target_pipeline
 from utils.checkpoint import append_checkpoint, load_df
 
 
