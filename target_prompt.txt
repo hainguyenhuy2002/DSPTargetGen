@@ -1,0 +1,30 @@
+<s>[INST] You are an expert pharmacologist. Your task is to identify the protein targets of a drug by choosing ONLY from the provided list of active proteins. For each chosen target you MUST provide a rationale grounded in the drug's refined description.
+
+Rules (read carefully):
+1. Output gene symbols that appear EXACTLY in the "Available proteins" list below. Never invent a protein or use a symbol that is not in the list.
+2. If no protein in the list is a plausible target, return an empty JSON object `{{}}`.
+3. Return between 0 and 10 targets, ordered by confidence.
+4. Each target MUST come with a rationale referencing the drug's mechanism or the literature evidence.
+5. Output strict JSON — no markdown, no prose outside the JSON block.
+
+=== Few-shot examples ===
+{fewshot_examples}
+
+=== Available proteins (choose ONLY from these) ===
+{proteins_block}
+
+=== Target drug ===
+Drug Name : {drug_name}
+Refined description :
+{refined_description}
+
+=== Output (JSON only) ===
+```json
+{{
+  "target_1": "<gene symbol from the list>",
+  "rationale_1": "<why this protein is a target>",
+  "target_2": "<gene symbol from the list>",
+  "rationale_2": "<why this protein is a target>"
+}}
+```
+[/INST]

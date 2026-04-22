@@ -1,0 +1,13 @@
+# Core
+pandas>=2.0
+numpy>=1.24
+tqdm
+
+# LLM inference
+vllm>=0.5.0
+torch>=2.1
+
+# External data sources
+biopython>=1.83
+pubchempy>=1.0.4
+requests>=2.31

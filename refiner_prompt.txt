@@ -1,0 +1,22 @@
+<s>[INST] You are an expert pharmacologist. Revise the initial drug profile below using the PubMed abstracts as evidence. Correct any claim contradicted by the literature and add only information directly supported by it. Do not invent targets or pathways.
+
+=== Initial profile ===
+Drug Name : {drug_name}
+{initial_description}
+
+=== PubMed abstracts ===
+{abstracts}
+
+Return ONLY a valid JSON object:
+
+```json
+{{
+  "drug_class": "<therapeutic class>",
+  "mechanism_of_action": "<1-3 sentences, grounded in the abstracts>",
+  "putative_protein_targets": ["<gene symbols>"],
+  "pathways": ["<canonical pathway names>"],
+  "metabolism": "<1-2 sentences>",
+  "evidence_notes": "<1-2 sentences on what the abstracts added or changed>"
+}}
+```
+[/INST]
