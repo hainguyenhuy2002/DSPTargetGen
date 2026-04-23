@@ -58,7 +58,7 @@ LLM_BACKEND = os.environ.get("LLM_BACKEND", "together").lower()
 # --- Together AI settings ------------------------------------------------
 # Paste your key directly here, or export TOGETHER_API_KEY in the shell.
 TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY", "YOUR_TOGETHER_API_KEY")
-TOGETHER_MODEL = "deepseek-ai/DeepSeek-V3"  # must match Together's exact model ID
+TOGETHER_MODEL = "meta-llama/Llama-3.3-70B-Instruct-Turbo"  # must match Together's exact model ID
 TOGETHER_MAX_WORKERS = 8  # concurrent HTTP requests to Together
 TOGETHER_REQUEST_TIMEOUT = 120.0  # seconds
 
