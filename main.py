@@ -22,6 +22,8 @@ Usage
     python main.py --stage descriptions       # only refined descriptions
     python main.py --stage targets            # only target prediction
     python main.py --tensor-parallel-size 4   # override TP (default from config)
+    python main.py --batch-size 16             # override batch size (default=1)
+    python main.py --model-path /path/to/model  # override model path (default from config)
 """
 
 from __future__ import annotations
@@ -106,16 +108,16 @@ def _load_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 # ==========================================================================
 # Model
 # ==========================================================================
-def _build_llm(tensor_parallel_size: int):
+def _build_llm(tensor_parallel_size: int, model_path: str):
     """Load the quantised Mixtral once, sharded across all 4 GPUs."""
     from vllm import LLM
 
     log = logging.getLogger(__name__)
     log.info(
-        "Loading vLLM model from %s (TP=%d)", config.MODEL_PATH, tensor_parallel_size
+        "Loading vLLM model from %s (TP=%d)", model_path, tensor_parallel_size
     )
     return LLM(
-        model=config.MODEL_PATH,
+        model=model_path,
         revision=config.MODEL_REVISION,
         quantization=config.QUANTIZATION,
         dtype=config.DTYPE,
@@ -129,7 +131,7 @@ def _build_llm(tensor_parallel_size: int):
 # ==========================================================================
 # Orchestration
 # ==========================================================================
-def run_all(tensor_parallel_size: int, stage: str = "all", batch_size: int = 1) -> None:
+def run_all(tensor_parallel_size: int, stage: str = "all", batch_size: int = 1, model_path: str = config.MODEL_PATH) -> None:
     log = logging.getLogger(__name__)
     drugs_df, proteins_df, gt_df = _load_inputs()
 
@@ -148,7 +150,7 @@ def run_all(tensor_parallel_size: int, stage: str = "all", batch_size: int = 1) 
     log.info("   -> %d GT drugs will go through description only", len(gt_rows))
     log.info("   -> %d remaining drugs will go through both stages", len(all_rest_rows))
 
-    llm = _build_llm(tensor_parallel_size)
+    llm = _build_llm(tensor_parallel_size, model_path)
 
     # ------------------------------------------------------------------
     # STEP 1 — refined descriptions for ground-truth drugs
@@ -252,10 +254,23 @@ def main() -> None:
         default=config.TENSOR_PARALLEL_SIZE,
         help="vLLM tensor_parallel_size.",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Batch size for processing.",
+    )
     args = parser.parse_args()
 
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=config.MODEL_PATH,
+        help="Path to the vLLM model.",
+    )
+
     _setup_logging()
-    run_all(tensor_parallel_size=args.tensor_parallel_size, stage=args.stage)
+    run_all(tensor_parallel_size=args.tensor_parallel_size, stage=args.stage, batch_size=args.batch_size, model_path=args.model_path)
 
 
 if __name__ == "__main__":
