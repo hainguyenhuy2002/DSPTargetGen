@@ -29,13 +29,14 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-
+import tqdm
 import pandas as pd
 
 # vLLM is heavy — import lazily inside main() so `--help` etc stay snappy.
 import config
 from pipelines.description_pipeline import run_description_pipeline
 from pipelines.target_pipeline import run_target_pipeline
+from utils.list import get_batches
 from utils.checkpoint import append_checkpoint, load_df
 
 
@@ -128,13 +129,15 @@ def _build_llm(tensor_parallel_size: int):
 # ==========================================================================
 # Orchestration
 # ==========================================================================
-def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
+def run_all(tensor_parallel_size: int, stage: str = "all", batch_size: int = 1) -> None:
     log = logging.getLogger(__name__)
     drugs_df, proteins_df, gt_df = _load_inputs()
 
     gt_names = set(gt_df["Drug Name"].astype(str))
     gt_rows = drugs_df[drugs_df["drug_name"].isin(gt_names)].copy()
-    rest_rows = drugs_df[~drugs_df["drug_name"].isin(gt_names)].copy()
+    all_rest_rows = drugs_df[~drugs_df["drug_name"].isin(gt_names)].copy()
+    all_rest_drugs = set(all_rest_rows["drug_name"])
+
 
     log.info(
         "Loaded: %d drugs | %d proteins | %d ground-truth pairs",
@@ -143,7 +146,7 @@ def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
         len(gt_df),
     )
     log.info("   -> %d GT drugs will go through description only", len(gt_rows))
-    log.info("   -> %d remaining drugs will go through both stages", len(rest_rows))
+    log.info("   -> %d remaining drugs will go through both stages", len(all_rest_rows))
 
     llm = _build_llm(tensor_parallel_size)
 
@@ -161,24 +164,36 @@ def run_all(tensor_parallel_size: int, stage: str = "all") -> None:
     # STEP 2 — descriptions + targets for the remaining drugs
     # ------------------------------------------------------------------
     failed_rest: list[str] = []
-    if stage in ("all", "descriptions"):
-        log.info("=" * 70)
-        log.info("STEP 2a: refined descriptions for remaining drugs")
-        log.info("=" * 70)
-        failed_rest = run_description_pipeline(llm, rest_rows, use_cid_fallback=False)
+    for sub_drugs in tqdm(get_batches(all_rest_drugs, batch_size), total=len(all_rest_drugs)//batch_size + 1):
+        log.info(
+            "STEP 2: processing batch of %d remaining drugs (stage=%s)",
+            len(sub_drugs),
+            stage,
+        )
+        rest_rows = all_rest_rows[all_rest_rows["drug_name"].isin(sub_drugs)].copy()
 
-    if stage in ("all", "targets"):
-        log.info("=" * 70)
-        log.info("STEP 2b: target prediction for remaining drugs")
-        log.info("=" * 70)
-        refined_desc_df = load_df(config.REFINED_DESC_JSON)
-        if refined_desc_df.empty:
-            log.warning(
-                "No refined descriptions on disk - run --stage descriptions first"
-            )
-        else:
-            run_target_pipeline(llm, refined_desc_df, gt_df, proteins_df)
+        sub_failed_rest: list[str] = []
+        if stage in ("all", "descriptions"):
+            log.info("=" * 70)
+            log.info("STEP 2a: refined descriptions for remaining drugs")
+            log.info("=" * 70)
+            sub_failed_rest = run_description_pipeline(llm, rest_rows, use_cid_fallback=False)
 
+        if stage in ("all", "targets"):
+            log.info("=" * 70)
+            log.info("STEP 2b: target prediction for remaining drugs")
+            log.info("=" * 70)
+            refined_desc_df = load_df(config.REFINED_DESC_JSON)
+
+            current_drugs = rest_rows["drug_name"].unique().tolist()
+            refined_desc_df = refined_desc_df[refined_desc_df["drug_name"].isin(current_drugs)].reset_index(drop=True)
+            if refined_desc_df.empty:
+                log.warning(
+                    "No refined descriptions on disk - run --stage descriptions first"
+                )
+            else:
+                run_target_pipeline(llm, refined_desc_df, gt_df, proteins_df)
+        failed_rest.extend(sub_failed_rest)
     # ------------------------------------------------------------------
     # STEP 3 — CID-fallback retry for everything that failed PubMed-by-name
     # ------------------------------------------------------------------
