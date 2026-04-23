@@ -24,11 +24,11 @@ import random
 from typing import Iterable
 
 import pandas as pd
-from vllm import SamplingParams
 
 import config
 from utils.aggregator import filter_by_votes, map_genes_to_protein_ids, vote_targets
 from utils.checkpoint import append_checkpoint, load_processed
+from utils.llm_backend import SamplingParams
 from utils.parser import extract_targets, parse_json
 from utils.prompts import render_prompt
 

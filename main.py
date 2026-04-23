@@ -109,22 +109,33 @@ def _load_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 # Model
 # ==========================================================================
 def _build_llm(tensor_parallel_size: int, model_path: str):
-    """Load the quantised Mixtral once, sharded across all 4 GPUs."""
-    from vllm import LLM
+    """
+    Build the LLM backend configured in config.LLM_BACKEND.
+
+    Returns an object that exposes `.generate(prompts, sampling_params,
+    use_tqdm=True)` with the same output shape as vLLM. The pipelines below
+    don't need to know which backend is in use.
+    """
+    from utils.llm_backend import build_backend
 
     log = logging.getLogger(__name__)
-    log.info(
-        "Loading vLLM model from %s (TP=%d)", model_path, tensor_parallel_size
-    )
-    return LLM(
-        model=model_path,
-        revision=config.MODEL_REVISION,
+    log.info("Building LLM backend: %s", config.LLM_BACKEND)
+
+    return build_backend(
+        kind=config.LLM_BACKEND,
+        # vLLM-only kwargs
+        model_path=model_path,
+        tensor_parallel_size=tensor_parallel_size,
+        model_revision=config.MODEL_REVISION,
         quantization=config.QUANTIZATION,
         dtype=config.DTYPE,
-        # tensor_parallel_size=tensor_parallel_size,
-        #        max_model_len=config.MAX_MODEL_LEN,
         gpu_memory_utilization=config.GPU_MEMORY_UTILIZATION,
         enforce_eager=config.ENFORCE_EAGER,
+        # Together-only kwargs
+        together_model=config.TOGETHER_MODEL,
+        together_api_key=config.TOGETHER_API_KEY,
+        together_max_workers=config.TOGETHER_MAX_WORKERS,
+        together_request_timeout=config.TOGETHER_REQUEST_TIMEOUT,
     )
 
 
@@ -260,17 +271,30 @@ def main() -> None:
         default=1,
         help="Batch size for processing.",
     )
-    args = parser.parse_args()
-
     parser.add_argument(
         "--model-path",
         type=str,
         default=config.MODEL_PATH,
-        help="Path to the vLLM model.",
+        help="Path to the vLLM model (only used when LLM_BACKEND=='vllm').",
     )
+    parser.add_argument(
+        "--backend",
+        choices=["together", "vllm"],
+        default=config.LLM_BACKEND,
+        help="Which LLM backend to use. Overrides config.LLM_BACKEND.",
+    )
+    args = parser.parse_args()
+
+    # Let the CLI flag override the config default.
+    config.LLM_BACKEND = args.backend
 
     _setup_logging()
-    run_all(tensor_parallel_size=args.tensor_parallel_size, stage=args.stage, batch_size=args.batch_size, model_path=args.model_path)
+    run_all(
+        tensor_parallel_size=args.tensor_parallel_size,
+        stage=args.stage,
+        batch_size=args.batch_size,
+        model_path=args.model_path,
+    )
 
 
 if __name__ == "__main__":

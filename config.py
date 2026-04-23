@@ -4,6 +4,7 @@ Central configuration for the Drug-Target LLM pipeline.
 Every path, hyperparameter, and prompt template is defined here so the
 pipelines themselves stay pure logic and can be unit-tested in isolation.
 """
+import os
 
 from pathlib import Path
 
@@ -35,8 +36,22 @@ REFINER_PROMPT = PROMPTS_DIR / "refiner_prompt.txt"
 TARGET_PROMPT = PROMPTS_DIR / "target_prompt.txt"
 
 # ==========================================================================
-# Model (vLLM)
+# Model backend
 # ==========================================================================
+# Which backend to use for LLM inference.
+#   "together" — Together AI REST API (via llama-index TogetherLLM)
+#   "vllm"     — local vLLM engine (legacy path; requires GPUs)
+
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "together").lower()
+
+# --- Together AI settings ------------------------------------------------
+# Paste your key directly here, or export TOGETHER_API_KEY in the shell.
+TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY", "YOUR_TOGETHER_API_KEY")
+TOGETHER_MODEL = "deepseek-ai/DeepSeek-V3"  # must match Together's exact model ID
+TOGETHER_MAX_WORKERS = 8  # concurrent HTTP requests to Together
+TOGETHER_REQUEST_TIMEOUT = 120.0  # seconds
+
+# --- vLLM settings (only used when LLM_BACKEND == "vllm") ---------------
 # Path can be a local snapshot or a HF repo id. Default is the GPTQ 4-bit
 # Mixtral used in the original CellHit notebook.
 MODEL_PATH = "/villa/rhh25/Cellhit/mixtral"
