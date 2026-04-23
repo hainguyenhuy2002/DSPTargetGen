@@ -24,10 +24,107 @@ from __future__ import annotations
 import concurrent.futures as cf
 import logging
 import os
+import random
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Exception inspection helpers — best-effort, because llama-index + openai +
+# httpx can surface the same 429 in a handful of different shapes.
+# ---------------------------------------------------------------------------
+def _status_code(exc: BaseException) -> Optional[int]:
+    """Try hard to find an HTTP status code on an exception."""
+    for path in (
+        ("status_code",),
+        ("response", "status_code"),
+        ("http_status",),
+        ("resp", "status_code"),
+    ):
+        obj: Any = exc
+        for a in path:
+            obj = getattr(obj, a, None)
+            if obj is None:
+                break
+        if isinstance(obj, int):
+            return obj
+    return None
+
+
+def _is_rate_limit(exc: BaseException) -> bool:
+    if exc.__class__.__name__ == "RateLimitError":
+        return True
+    if _status_code(exc) == 429:
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "rate limit" in msg or "too many requests" in msg
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    if _is_rate_limit(exc):
+        return True
+    code = _status_code(exc)
+    if isinstance(code, int) and 500 <= code < 600:
+        return True
+    name = exc.__class__.__name__.lower()
+    if any(
+        s in name
+        for s in ("timeout", "connection", "apiconnection", "serviceunavailable")
+    ):
+        return True
+    msg = str(exc).lower()
+    return any(
+        s in msg
+        for s in (
+            "timeout",
+            "timed out",
+            "connection reset",
+            "connection aborted",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+        )
+    )
+
+
+def _extract_retry_after(exc: BaseException) -> Optional[float]:
+    """Pull a Retry-After value (seconds) from common exception shapes."""
+    for path in (("response", "headers"), ("headers",)):
+        obj: Any = exc
+        for a in path:
+            obj = getattr(obj, a, None)
+            if obj is None:
+                break
+        if obj is None:
+            continue
+        for key in ("retry-after", "Retry-After", "x-ratelimit-reset"):
+            try:
+                val = obj[key] if key in obj else None
+            except TypeError:
+                val = None
+            if val is None:
+                # Some header containers only expose .get()
+                try:
+                    val = obj.get(key)
+                except Exception:
+                    val = None
+            if val is None:
+                continue
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+
+    ra = getattr(exc, "retry_after", None)
+    if ra is not None:
+        try:
+            return float(ra)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +175,9 @@ class TogetherBackend:
         api_key: str,
         max_workers: int = 8,
         request_timeout: float = 120.0,
+        max_retries: int = 8,
+        initial_backoff: float = 2.0,
+        max_backoff: float = 60.0,
     ):
         try:
             from llama_index.llms.together import TogetherLLM
@@ -102,10 +202,19 @@ class TogetherBackend:
         self._request_timeout = request_timeout
         self.max_workers = max_workers
 
+        # Retry / backoff settings
+        self._max_retries = max(0, int(max_retries))
+        self._initial_backoff = float(initial_backoff)
+        self._max_backoff = float(max_backoff)
+
         log.info(
-            "TogetherBackend ready (model=%s, max_workers=%d)",
+            "TogetherBackend ready (model=%s, max_workers=%d, max_retries=%d, "
+            "backoff=%.1fs..%.1fs)",
             model,
             max_workers,
+            self._max_retries,
+            self._initial_backoff,
+            self._max_backoff,
         )
 
     # ---- internal helpers -------------------------------------------------
@@ -134,10 +243,65 @@ class TogetherBackend:
                 return self._TogetherLLM(**kwargs)
 
     @staticmethod
-    def _complete(llm, prompt: str) -> str:
+    def _complete_once(llm, prompt: str) -> str:
         resp = llm.complete(prompt)
         # llama_index's CompletionResponse exposes `.text`
         return getattr(resp, "text", str(resp))
+
+    def _complete(self, llm, prompt: str, prompt_idx: int = -1) -> str:
+        """
+        Call `llm.complete` with retry + exponential backoff.
+
+        Retries on:
+          * HTTP 429 (rate limit) — honors `Retry-After` header if present.
+          * HTTP 5xx (server error).
+          * Timeout / connection errors.
+
+        Non-retryable errors (e.g. 400, 401, 403, 404) are raised immediately.
+        """
+        attempt = 0
+        last_exc: Optional[BaseException] = None
+        # "Decorrelated jitter" — backoff starts at INITIAL and each step is
+        # random in [INITIAL, prev*3], capped at MAX. Smooths the thundering
+        # herd when many threads hit 429 at once.
+        next_ceiling = self._initial_backoff
+
+        while True:
+            try:
+                return self._complete_once(llm, prompt)
+            except Exception as e:
+                last_exc = e
+                if not _is_retryable(e) or attempt >= self._max_retries:
+                    raise
+
+                attempt += 1
+                retry_after = _extract_retry_after(e)
+                if retry_after is not None:
+                    # Honor server-suggested wait + small jitter to desync threads.
+                    wait = min(retry_after, self._max_backoff) + random.uniform(
+                        0.0, 1.0
+                    )
+                else:
+                    # Decorrelated jitter
+                    ceiling = min(next_ceiling * 3.0, self._max_backoff)
+                    wait = random.uniform(self._initial_backoff, ceiling)
+                    next_ceiling = wait
+
+                kind = "rate-limit (429)" if _is_rate_limit(e) else type(e).__name__
+                log.info(
+                    "Together retry (prompt=%d, attempt=%d/%d): %s — sleeping %.1fs",
+                    prompt_idx,
+                    attempt,
+                    self._max_retries,
+                    kind,
+                    wait,
+                )
+                time.sleep(wait)
+
+        # Unreachable — loop either returns or re-raises — but satisfy the type
+        # checker / make tracebacks obvious.
+        if last_exc is not None:
+            raise last_exc
 
     # ---- public API --------------------------------------------------------
     def generate(
@@ -160,7 +324,7 @@ class TogetherBackend:
         with cf.ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             for i, prompt in enumerate(prompts):
                 for _ in range(n):
-                    fut = pool.submit(self._complete, llm, prompt)
+                    fut = pool.submit(self._complete, llm, prompt, i)
                     tasks.append((i, fut))
 
             iterator: Any = cf.as_completed([f for _, f in tasks])
@@ -183,7 +347,13 @@ class TogetherBackend:
                 try:
                     text = fut.result()
                 except Exception as e:
-                    log.warning("Together AI call failed for prompt %d: %s", i, e)
+                    kind = "rate-limit exhausted" if _is_rate_limit(e) else type(e).__name__
+                    log.warning(
+                        "Together call failed for prompt %d after retries (%s): %s",
+                        i,
+                        kind,
+                        e,
+                    )
                     text = ""
                 per_prompt[i].append(_Sample(text=text, finish_reason="stop"))
 
@@ -212,6 +382,9 @@ def build_backend(
     together_api_key: Optional[str] = None,
     together_max_workers: int = 8,
     together_request_timeout: float = 120.0,
+    together_max_retries: int = 8,
+    together_initial_backoff: float = 2.0,
+    together_max_backoff: float = 60.0,
 ):
     """Build an LLM backend exposing vLLM's `.generate()` shape."""
     kind = (kind or "together").lower()
@@ -224,6 +397,9 @@ def build_backend(
             api_key=together_api_key or "",
             max_workers=together_max_workers,
             request_timeout=together_request_timeout,
+            max_retries=together_max_retries,
+            initial_backoff=together_initial_backoff,
+            max_backoff=together_max_backoff,
         )
 
     if kind == "vllm":

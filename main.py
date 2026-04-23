@@ -30,9 +30,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
-import tqdm
 import pandas as pd
+from tqdm.auto import tqdm
 
 # vLLM is heavy — import lazily inside main() so `--help` etc stay snappy.
 import config
@@ -136,6 +137,9 @@ def _build_llm(tensor_parallel_size: int, model_path: str):
         together_api_key=config.TOGETHER_API_KEY,
         together_max_workers=config.TOGETHER_MAX_WORKERS,
         together_request_timeout=config.TOGETHER_REQUEST_TIMEOUT,
+        together_max_retries=config.TOGETHER_MAX_RETRIES,
+        together_initial_backoff=config.TOGETHER_INITIAL_BACKOFF,
+        together_max_backoff=config.TOGETHER_MAX_BACKOFF,
     )
 
 
@@ -177,9 +181,19 @@ def run_all(tensor_parallel_size: int, stage: str = "all", batch_size: int = 1, 
     # STEP 2 — descriptions + targets for the remaining drugs
     # ------------------------------------------------------------------
     failed_rest: list[str] = []
-    for sub_drugs in tqdm(get_batches(all_rest_drugs, batch_size), total=len(all_rest_drugs)//batch_size + 1):
+    n_batches = math.ceil(len(all_rest_drugs) / batch_size) if batch_size else 0
+    batch_pbar = tqdm(
+        get_batches(all_rest_drugs, batch_size),
+        total=n_batches,
+        desc="STEP 2 batches",
+        unit="batch",
+    )
+    for batch_idx, sub_drugs in enumerate(batch_pbar, start=1):
+        batch_pbar.set_postfix(drugs=len(sub_drugs), stage=stage)
         log.info(
-            "STEP 2: processing batch of %d remaining drugs (stage=%s)",
+            "STEP 2: batch %d/%d (%d drugs, stage=%s)",
+            batch_idx,
+            n_batches,
             len(sub_drugs),
             stage,
         )
@@ -199,7 +213,9 @@ def run_all(tensor_parallel_size: int, stage: str = "all", batch_size: int = 1, 
             refined_desc_df = load_df(config.REFINED_DESC_JSON)
 
             current_drugs = rest_rows["drug_name"].unique().tolist()
-            refined_desc_df = refined_desc_df[refined_desc_df["drug_name"].isin(current_drugs)].reset_index(drop=True)
+            gt_drugs = gt_df["Drug Name"].unique().tolist()
+            all_drugs  = current_drugs + gt_drugs
+            refined_desc_df = refined_desc_df[refined_desc_df["drug_name"].isin(all_drugs)].reset_index(drop=True)
             if refined_desc_df.empty:
                 log.warning(
                     "No refined descriptions on disk - run --stage descriptions first"

@@ -1,6 +1,7 @@
 # Core
 pandas>=2.0
 tqdm
+python-dotenv>=1.0
 
 # --- LLM inference (Together AI backend, default) --------------------------
 # This is all you need for LLM_BACKEND="together".
