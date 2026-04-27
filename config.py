@@ -4,6 +4,7 @@ Central configuration for the Drug-Target LLM pipeline.
 Every path, hyperparameter, and prompt template is defined here so the
 pipelines themselves stay pure logic and can be unit-tested in isolation.
 """
+import os
 
 from pathlib import Path
 
@@ -15,6 +16,17 @@ DATA_DIR = PROJECT_ROOT / "data"
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 LOG_DIR = OUTPUT_DIR / "logs"
+
+# --- Load secrets from .env --------------------------------------------
+# Values in the actual shell environment take precedence over .env values
+# (standard python-dotenv behavior with override=False). If python-dotenv
+# is not installed, environment variables still work.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+except ImportError:
+    pass
 
 # --- Inputs --------------------------------------------------------------
 DRUGS_INFO_CSV = "/DATA/DATANAS2/rhh25/Cellhit/data/drugs/drugs_info.csv"
@@ -35,8 +47,32 @@ REFINER_PROMPT = PROMPTS_DIR / "refiner_prompt.txt"
 TARGET_PROMPT = PROMPTS_DIR / "target_prompt.txt"
 
 # ==========================================================================
-# Model (vLLM)
+# Model backend
 # ==========================================================================
+# Which backend to use for LLM inference.
+#   "together" — Together AI REST API (via llama-index TogetherLLM)
+#   "vllm"     — local vLLM engine (legacy path; requires GPUs)
+
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "together").lower()
+
+# --- Together AI settings ------------------------------------------------
+# Paste your key directly here, or export TOGETHER_API_KEY in the shell.
+TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY", "YOUR_TOGETHER_API_KEY")
+TOGETHER_MODEL = "meta-llama/Llama-3.3-70B-Instruct-Turbo"  # must match Together's exact model ID
+TOGETHER_MAX_WORKERS = 8  # concurrent HTTP requests to Together
+TOGETHER_REQUEST_TIMEOUT = 120.0  # seconds
+
+# Retry-with-backoff on 429 / 5xx / transient network errors.
+# `MAX_RETRIES` is the max number of *retries* after the first attempt
+# (so total attempts = MAX_RETRIES + 1). Set to 0 to disable retries.
+# If the server returns a `Retry-After` header, it is honored verbatim
+# (plus a small random jitter). Otherwise a decorrelated-jitter exponential
+# backoff is used, bounded by INITIAL_BACKOFF and MAX_BACKOFF.
+TOGETHER_MAX_RETRIES = 8
+TOGETHER_INITIAL_BACKOFF = 2.0  # seconds
+TOGETHER_MAX_BACKOFF = 60.0  # seconds
+
+# --- vLLM settings (only used when LLM_BACKEND == "vllm") ---------------
 # Path can be a local snapshot or a HF repo id. Default is the GPTQ 4-bit
 # Mixtral used in the original CellHit notebook.
 MODEL_PATH = "/villa/rhh25/Cellhit/mixtral"

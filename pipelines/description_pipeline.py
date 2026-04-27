@@ -24,11 +24,11 @@ from __future__ import annotations
 import logging
 
 import pandas as pd
-from vllm import SamplingParams
 
 import config
 from utils.abstracts import batch_fetch_by_cid, batch_fetch_by_name
 from utils.checkpoint import append_checkpoint, load_processed
+from utils.llm_backend import SamplingParams
 from utils.prompts import render_prompt
 
 log = logging.getLogger(__name__)
@@ -48,9 +48,12 @@ def _format_abstracts(abstracts: list[str], limit_chars: int = 6000) -> str:
 def _vllm_generate(
     llm, prompts: list[str], sampling_params: SamplingParams
 ) -> list[str]:
-    """Run vLLM generation and return first-sample text for each prompt."""
+    """Run generation and return first-sample text for each prompt.
+
+    Works for both the vLLM engine and the TogetherBackend — both return a
+    list of objects whose `.outputs[0].text` is the first sample.
+    """
     outputs = llm.generate(prompts, sampling_params, use_tqdm=True)
-    # vLLM returns RequestOutputs in the same order as prompts
     return [o.outputs[0].text for o in outputs]
 
 
@@ -130,8 +133,8 @@ def run_description_pipeline(
 
     Parameters
     ----------
-    llm : vllm.LLM
-        Pre-loaded, already sharded across all GPUs.
+    llm : vllm.LLM | utils.llm_backend.TogetherBackend
+        Pre-loaded LLM backend exposing `.generate(prompts, SamplingParams)`.
     drugs_df : DataFrame with columns [drug_name, cid, smiles, inchikey]
     use_cid_fallback : bool
         If True, use `batch_fetch_by_cid` for abstract retrieval (used on

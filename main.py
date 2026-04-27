@@ -30,9 +30,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
-import tqdm
 import pandas as pd
+from tqdm.auto import tqdm
 
 # vLLM is heavy — import lazily inside main() so `--help` etc stay snappy.
 import config
@@ -109,22 +110,36 @@ def _load_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 # Model
 # ==========================================================================
 def _build_llm(tensor_parallel_size: int, model_path: str):
-    """Load the quantised Mixtral once, sharded across all 4 GPUs."""
-    from vllm import LLM
+    """
+    Build the LLM backend configured in config.LLM_BACKEND.
+
+    Returns an object that exposes `.generate(prompts, sampling_params,
+    use_tqdm=True)` with the same output shape as vLLM. The pipelines below
+    don't need to know which backend is in use.
+    """
+    from utils.llm_backend import build_backend
 
     log = logging.getLogger(__name__)
-    log.info(
-        "Loading vLLM model from %s (TP=%d)", model_path, tensor_parallel_size
-    )
-    return LLM(
-        model=model_path,
-        revision=config.MODEL_REVISION,
+    log.info("Building LLM backend: %s", config.LLM_BACKEND)
+
+    return build_backend(
+        kind=config.LLM_BACKEND,
+        # vLLM-only kwargs
+        model_path=model_path,
+        tensor_parallel_size=tensor_parallel_size,
+        model_revision=config.MODEL_REVISION,
         quantization=config.QUANTIZATION,
         dtype=config.DTYPE,
-        # tensor_parallel_size=tensor_parallel_size,
-        #        max_model_len=config.MAX_MODEL_LEN,
         gpu_memory_utilization=config.GPU_MEMORY_UTILIZATION,
         enforce_eager=config.ENFORCE_EAGER,
+        # Together-only kwargs
+        together_model=config.TOGETHER_MODEL,
+        together_api_key=config.TOGETHER_API_KEY,
+        together_max_workers=config.TOGETHER_MAX_WORKERS,
+        together_request_timeout=config.TOGETHER_REQUEST_TIMEOUT,
+        together_max_retries=config.TOGETHER_MAX_RETRIES,
+        together_initial_backoff=config.TOGETHER_INITIAL_BACKOFF,
+        together_max_backoff=config.TOGETHER_MAX_BACKOFF,
     )
 
 
@@ -166,9 +181,19 @@ def run_all(tensor_parallel_size: int, stage: str = "all", batch_size: int = 1, 
     # STEP 2 — descriptions + targets for the remaining drugs
     # ------------------------------------------------------------------
     failed_rest: list[str] = []
-    for sub_drugs in tqdm(get_batches(all_rest_drugs, batch_size), total=len(all_rest_drugs)//batch_size + 1):
+    n_batches = math.ceil(len(all_rest_drugs) / batch_size) if batch_size else 0
+    batch_pbar = tqdm(
+        get_batches(all_rest_drugs, batch_size),
+        total=n_batches,
+        desc="STEP 2 batches",
+        unit="batch",
+    )
+    for batch_idx, sub_drugs in enumerate(batch_pbar, start=1):
+        batch_pbar.set_postfix(drugs=len(sub_drugs), stage=stage)
         log.info(
-            "STEP 2: processing batch of %d remaining drugs (stage=%s)",
+            "STEP 2: batch %d/%d (%d drugs, stage=%s)",
+            batch_idx,
+            n_batches,
             len(sub_drugs),
             stage,
         )
@@ -188,7 +213,9 @@ def run_all(tensor_parallel_size: int, stage: str = "all", batch_size: int = 1, 
             refined_desc_df = load_df(config.REFINED_DESC_JSON)
 
             current_drugs = rest_rows["drug_name"].unique().tolist()
-            refined_desc_df = refined_desc_df[refined_desc_df["drug_name"].isin(current_drugs)].reset_index(drop=True)
+            gt_drugs = gt_df["Drug Name"].unique().tolist()
+            all_drugs  = current_drugs + gt_drugs
+            refined_desc_df = refined_desc_df[refined_desc_df["drug_name"].isin(all_drugs)].reset_index(drop=True)
             if refined_desc_df.empty:
                 log.warning(
                     "No refined descriptions on disk - run --stage descriptions first"
@@ -260,17 +287,30 @@ def main() -> None:
         default=1,
         help="Batch size for processing.",
     )
-    args = parser.parse_args()
-
     parser.add_argument(
         "--model-path",
         type=str,
         default=config.MODEL_PATH,
-        help="Path to the vLLM model.",
+        help="Path to the vLLM model (only used when LLM_BACKEND=='vllm').",
     )
+    parser.add_argument(
+        "--backend",
+        choices=["together", "vllm"],
+        default=config.LLM_BACKEND,
+        help="Which LLM backend to use. Overrides config.LLM_BACKEND.",
+    )
+    args = parser.parse_args()
+
+    # Let the CLI flag override the config default.
+    config.LLM_BACKEND = args.backend
 
     _setup_logging()
-    run_all(tensor_parallel_size=args.tensor_parallel_size, stage=args.stage, batch_size=args.batch_size, model_path=args.model_path)
+    run_all(
+        tensor_parallel_size=args.tensor_parallel_size,
+        stage=args.stage,
+        batch_size=args.batch_size,
+        model_path=args.model_path,
+    )
 
 
 if __name__ == "__main__":

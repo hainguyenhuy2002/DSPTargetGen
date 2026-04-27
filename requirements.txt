@@ -1,32 +1,32 @@
 # Core
 pandas>=2.0
 tqdm
+python-dotenv>=1.0
 
-# --- Core ---
-torch==2.1.2
-torchvision==0.16.2
-torchaudio==2.1.2
-xformers==0.0.23.post1
-vllm==0.4.0
- 
-# --- Runtime deps pinned to versions known to work with vLLM 0.4.0 ---
-transformers>=4.39.0,<4.40.0
-tokenizers>=0.15.0
-accelerate>=0.27.0
-sentencepiece>=0.1.99
-protobuf>=3.20.0
-numpy<2.0
-pydantic>=2.0
-fastapi
-uvicorn[standard]
-openai
-huggingface-hub
-einops
-ray>=2.9
+# --- LLM inference (Together AI backend, default) --------------------------
+# This is all you need for LLM_BACKEND="together".
+llama-index-llms-together>=0.2.0
+llama-index-core>=0.10.0
 
-# # LLM inference
-# vllm>=0.5.0
-# torch>=2.1
+# --- LLM inference (optional vLLM backend, local GPUs) ---------------------
+# Uncomment if you want to run LLM_BACKEND="vllm" on local GPUs.
+# torch==2.1.2
+# torchvision==0.16.2
+# torchaudio==2.1.2
+# xformers==0.0.23.post1
+# vllm==0.4.0
+# transformers>=4.39.0,<4.40.0
+# tokenizers>=0.15.0
+# accelerate>=0.27.0
+# sentencepiece>=0.1.99
+# protobuf>=3.20.0
+# numpy<2.0
+# pydantic>=2.0
+# fastapi
+# uvicorn[standard]
+# huggingface-hub
+# einops
+# ray>=2.9
 
 # External data sources
 biopython>=1.83
